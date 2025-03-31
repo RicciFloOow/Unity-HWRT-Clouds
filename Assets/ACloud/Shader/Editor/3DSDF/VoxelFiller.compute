@@ -1,0 +1,113 @@
+#pragma kernel VoxelFillInnerXKernel
+#pragma kernel VoxelFillInnerYKernel
+#pragma kernel VoxelFillInnerZKernel
+
+//note that, some versions of unity (such as 2021.x) are unable to correctly pass uintN/intN(N=2,3,4) to GPU through SetVector(), etc.
+//while, we use 2022.2.+ which can correctly interpret such vectors with given type
+uint3 _VoxelTexSize;
+
+Texture3D<uint> _VoxelTex;
+RWTexture3D<uint> RW_VoxelTex;
+RWTexture3D<float> RW_SDFTex;
+
+groupshared uint gsLineState[128];
+
+//a lax application of Jordan curve theorem:
+//for a non-boundary point, if we search along a given line for boundary intersections
+//and find that the counts of boundary crossings above and below the line are both non-zero with one being odd(at least one),
+//then the point is considered interior.
+//unfortunately, since the rasterized boundaries often exhibit a thickness greater than a single pixel,
+//we must employ more lenient criteria for the determination.
+bool IsPointInner(uint lineLength, uint gindex)
+{
+	uint aboveCount = 0;
+	uint belowCount = 0;
+	for (uint i = 0; i < lineLength; i++)
+	{
+		if (gsLineState[i] == 8)
+		{
+			if (i < gindex)
+			{
+				aboveCount++;	 
+			}
+			else
+			{
+				belowCount++;
+			}
+		}
+	}
+	return aboveCount > 0 && belowCount > 0;
+}
+
+[numthreads(128, 1, 1)]
+void VoxelFillInnerXKernel (uint3 id : SV_DispatchThreadID, uint gindex : SV_GroupIndex)
+{
+	uint vState;
+	if (any(id >= _VoxelTexSize))
+	{
+		vState = 0;
+	}
+	else
+	{
+		vState = RW_VoxelTex[id];
+	}
+	gsLineState[gindex] = vState;
+	GroupMemoryBarrierWithGroupSync();
+	if (any(id >= _VoxelTexSize) || vState == 8)
+	{
+		return;
+	}
+	//
+	if (IsPointInner(_VoxelTexSize.x, gindex))
+	{
+		RW_VoxelTex[id] = vState | 0x00000001;
+	}
+}
+
+[numthreads(1, 128, 1)]
+void VoxelFillInnerYKernel(uint3 id : SV_DispatchThreadID, uint gindex : SV_GroupIndex)
+{
+	uint vState;
+	if (any(id >= _VoxelTexSize))
+	{
+		vState = 0;
+	}
+	else
+	{
+		vState = RW_VoxelTex[id];
+	}
+	gsLineState[gindex] = vState;
+	GroupMemoryBarrierWithGroupSync();
+	if (any(id >= _VoxelTexSize) || vState == 8)
+	{
+		return;
+	}
+    if (IsPointInner(_VoxelTexSize.y, gindex))
+	{
+		RW_VoxelTex[id] = vState | 0x00000002;	
+	}
+}
+
+[numthreads(128, 1, 1)]//as Maximum Z = 64 < 128
+void VoxelFillInnerZKernel(uint3 id : SV_DispatchThreadID, uint gindex : SV_GroupIndex)
+{
+	uint vState;
+	if (any(id >= _VoxelTexSize.zyx))
+	{
+		vState = 0;
+	}
+	else
+	{
+		vState = RW_VoxelTex[id.zyx];
+	}
+	gsLineState[gindex] = vState;
+	GroupMemoryBarrierWithGroupSync();
+	if (any(id >= _VoxelTexSize.zyx) || vState == 8)
+	{
+		return;
+	}
+	if (IsPointInner(_VoxelTexSize.z, gindex))
+	{
+		RW_VoxelTex[id.zyx] = vState | 0x00000004;
+	}
+}

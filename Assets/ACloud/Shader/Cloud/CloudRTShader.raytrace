@@ -1,0 +1,130 @@
+#include "UnityShaderVariables.cginc"
+#include "ACloudLib.cginc"
+
+#pragma max_recursion_depth 3
+
+float _CameraZoom;
+
+Texture2D<float> _CameraDepthRT;
+Texture2D<float4> _CameraNormalRT;
+
+RWTexture2D<float4> RW_CloudColorDensityRT;
+SamplerState sampler_PointClamp;
+
+
+[shader("miss")]
+void MainRayHitShader (inout RayPayload rayPayload : SV_RayPayload)
+{
+	float3 rayOrigin = WorldRayOrigin();
+	float3 rayDir = WorldRayDirection();
+	//
+	float4 skyCol = GetSkyboxColor(rayDir);
+	if (!MarchingCloud(rayOrigin, rayDir, skyCol, rayPayload))
+	{
+		//trace失败了，需要手动输出天空盒
+		if (rayDir.y >= 0)
+		{
+			rayPayload.color = skyCol;
+			rayPayload.depth = _CloudTracingFarPlane;
+		}
+		else
+		{
+			rayPayload.needSecondaryRay = true;
+		}
+	}
+}
+
+[shader("miss")]
+void SecondaryRayHitShader (inout RayPayload rayPayload : SV_RayPayload)
+{
+	float3 rayOrigin = WorldRayOrigin();
+	float3 rayDir = WorldRayDirection();
+	//
+	float4 skyCol = GetSkyboxColor(rayDir);
+	if (!MarchingCloud(rayOrigin, rayDir, skyCol, rayPayload))
+	{
+		rayPayload.color = skyCol;
+		rayPayload.depth = _CloudTracingFarPlane;
+	}
+}
+
+
+[shader("raygeneration")]
+void RTCloudRayGeneration()
+{
+	uint2 launchIndex = DispatchRaysIndex().xy;
+    uint2 launchDim = DispatchRaysDimensions().xy;
+	//
+	float2 uv = float2(launchIndex.x / (float)(launchDim.x - 1), launchIndex.y / (float)(launchDim.y - 1));
+	//
+	float2 ndcCoords = (uv * 2 - 1) * _CameraZoom;
+	float aspectRatio = (float)launchDim.x / (float)launchDim.y;
+	float3 viewDirection = normalize(float3(ndcCoords.x * aspectRatio, ndcCoords.y, 1));
+	float3 rayDirection = normalize(mul((float3x3)unity_CameraToWorld, viewDirection));
+	//
+	RayDesc ray;
+	uint missShaderIndex = 3;
+	//
+	float depth = _CameraDepthRT.SampleLevel(sampler_PointClamp, uv, 0).x;
+	float4 normal = _CameraNormalRT.SampleLevel(sampler_PointClamp, uv, 0);
+	float3 ndcPos = float3(uv * 2 - 1, depth);
+	float3 wPos = DepthToWorldSpace(ndcPos);//深度还原的世界坐标并不是精确的，但对我们这里足够用了
+	//
+	bool needReflect = normal.w > REFLECTABLE_SMOOTHNESS;
+	bool needTracingFromCam = _WorldSpaceCameraPos.y < _CloudTracingLayerTop ? (_CloudTracingLayerBottom < _WorldSpaceCameraPos.y ? true : (rayDirection.y > 0) & !(wPos.y < _CloudTracingLayerBottom && needReflect)) : rayDirection.y < 0;
+	if (needTracingFromCam)
+	{
+		//这种射线需要检查是否是朝向地面的，如果是可能在miss shader中要tracing
+		ray.Origin    = _WorldSpaceCameraPos;
+		ray.Direction = rayDirection;
+		ray.TMin      = _CloudTracingNearPlane;
+		ray.TMax      = _CloudTracingFarPlane;//TODO:一个更节省的方法是用基于当前深度转化的射线长度, 需要注意的是, 其他情况下如果也基于深度来设置, 理论上是会有一定误差的
+
+		RayPayload payload = GetDefaultRayPayload();
+		missShaderIndex = 0;
+		TraceRay(_CloudsAccelStruct, RAY_FLAG_FORCE_NON_OPAQUE, 0xFF, 0, 1, missShaderIndex, ray, payload);
+		//
+		bool transparent = rayDirection.y < 0 && payload.color.w < 0.9;
+		if (payload.needSecondaryRay || transparent)//用transmittance的话阈值条件得改一下
+		{
+			ray.Origin    = wPos;
+			ray.Direction = reflect(rayDirection, normal.xyz);
+			ray.TMin      = _CloudTracingNearPlane;
+			ray.TMax      = _CloudTracingFarPlane;
+			RayPayload sndPayload = GetDefaultRayPayload();
+			missShaderIndex = 1;
+			TraceRay(_CloudsAccelStruct, RAY_FLAG_FORCE_NON_OPAQUE, 0xFF, 0, 1, missShaderIndex, ray, sndPayload);
+			payload.color = transparent ? lerp(sndPayload.color, payload.color, payload.color.w) : sndPayload.color;
+			payload.depth = sndPayload.depth;
+		}
+		//
+		CloudZTest(depth, payload);
+		RW_CloudColorDensityRT[launchIndex] = payload.color;
+		//有必要的话再输出深度
+	}
+	else
+	{
+		//
+		if (normal.w > REFLECTABLE_SMOOTHNESS)
+		{
+			//
+			ray.Origin    = wPos;
+			ray.Direction = reflect(rayDirection, normal.xyz);
+			ray.TMin      = _CloudTracingNearPlane;
+			ray.TMax      = _CloudTracingFarPlane;
+
+			RayPayload payload = GetDefaultRayPayload();
+			missShaderIndex = 0;
+			TraceRay(_CloudsAccelStruct, RAY_FLAG_FORCE_NON_OPAQUE, 0xFF, 0, 1, missShaderIndex, ray, payload);
+			CloudZTest(depth, payload);
+			RW_CloudColorDensityRT[launchIndex] = payload.color;
+			//有必要的话再输出深度
+		}
+		else
+		{
+			//绘制天空盒
+			RW_CloudColorDensityRT[launchIndex] = GetSkyboxColor(rayDirection);
+			//有必要的话再输出深度
+		}
+	}
+}

@@ -1,0 +1,49 @@
+#pragma multi_compile_local CHANNEL_X CHANNEL_Y CHANNEL_Z CHANNEL_W //need 2020.1.0+
+#pragma kernel GenerateWorleyNoiseKernel
+#pragma kernel GeneratePerlinWorleyNoiseKernel
+
+#include "../../Lib/OfflineNoiseHelperLib.cginc"
+
+float3 _NoiseTexInvSize;
+
+float4 _NoiseParameter0;
+float4 _NoiseParameter1;
+float4 _NoiseParameter2;
+
+RWTexture3D<float4> RW_NoiseTex3D;
+
+void WriteValueToGivenChannel(inout float4 sv, float v)
+{
+#if CHANNEL_X
+	sv.x = v;
+#elif CHANNEL_Y
+	sv.y = v;
+#elif CHANNEL_Z
+	sv.z = v;
+#else
+	sv.w = v;
+#endif
+}
+
+float3 CoordToPos(uint3 id)
+{
+	return id * _NoiseTexInvSize;
+}
+
+[numthreads(4, 4, 4)]
+void GenerateWorleyNoiseKernel (uint3 id : SV_DispatchThreadID)
+{
+	float4 noise = RW_NoiseTex3D[id];
+	float wNoise = FbmWorley(CoordToPos(id) * _NoiseParameter0.x + _NoiseParameter0.yzw, _NoiseParameter1.x);
+	WriteValueToGivenChannel(noise, wNoise);
+	RW_NoiseTex3D[id] = noise;
+}
+
+[numthreads(4, 4, 4)]
+void GeneratePerlinWorleyNoiseKernel (uint3 id : SV_DispatchThreadID)
+{
+	float4 noise = RW_NoiseTex3D[id];
+	float pwNoise = PerlinWorleyNoise(CoordToPos(id), _NoiseParameter0, _NoiseParameter1, _NoiseParameter2);
+	WriteValueToGivenChannel(noise, pwNoise);
+	RW_NoiseTex3D[id] = noise;
+}

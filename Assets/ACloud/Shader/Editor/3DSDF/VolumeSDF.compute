@@ -1,0 +1,160 @@
+//ref: https://www.comp.nus.edu.sg/~tants/jfa/rong-guodong-phd-thesis.pdf
+//use 1+JFA to get SDF
+#pragma kernel InitTexKernel
+#pragma kernel JFAKernel
+#pragma kernel GenerateSDFDistanceKernel
+
+int _JumpStep;
+
+uint3 _SDFTexSize;
+
+float3 _SDFTexInvSize;//1.0 / _SDFTexSize
+
+Texture3D<uint> _VoxelTex;
+Texture3D<uint4> _SDFIntermediateTex;//pingpong two texs
+RWTexture3D<uint4> RW_SDFIntermediateTex;
+RWTexture3D<float> RW_SDFTex;
+
+//deleted neighborhood
+static int3 neighbors[] =
+{
+	int3(-1, -1, -1),
+	int3(-1, -1, 0),
+	int3(-1, -1, 1),
+	int3(-1, 0, -1),
+	int3(-1, 0, 0),
+	int3(-1, 0, 1),
+	int3(-1, 1, -1),
+	int3(-1, 1, 0),
+	int3(-1, 1, 1),
+	int3(0, -1, -1),
+	int3(0, -1, 0),
+	int3(0, -1, 1),
+	int3(0, 0, -1),
+	int3(0, 0, 1),
+	int3(0, 1, -1),
+	int3(0, 1, 0),
+	int3(0, 1, 1),
+	int3(1, -1, -1),
+	int3(1, -1, 0),
+	int3(1, -1, 1),
+	int3(1, 0, -1),
+	int3(1, 0, 0),
+	int3(1, 0, 1),
+	int3(1, 1, -1),
+	int3(1, 1, 0),
+	int3(1, 1, 1)
+};
+
+[numthreads(4, 4, 4)]
+void InitTexKernel (uint3 id : SV_DispatchThreadID)
+{
+	if (any(id >= _SDFTexSize))
+	{
+		return;
+	}
+	uint vState = _VoxelTex[id];
+	RW_SDFIntermediateTex[id] = uint4(id, vState >= 7 ? (vState - 7) * 2 + 2 : 0);
+	//4: for boundary
+	//3: for the inner point which is not initial value
+	//2: inner points
+	//1: for the outer point which is not initial value
+	//0: outer points
+}
+
+void JFAOuterPoint(inout uint4 pState, uint3 id)
+{
+	if (pState.w < 2)//for outer points
+	{
+		float minDis = 1e10;//obviously > 128sqrt(3)
+		if (pState.w == 1)
+		{
+			//the outer point which is not initial value
+			minDis = length((float3)id - (float3)pState.xyz);
+		}
+		//
+		bool findCloser = false;
+		for (uint i = 0; i < 26; i++)
+		{
+			int3 samplePos = id + neighbors[i] * _JumpStep;
+			samplePos = clamp(samplePos, 0, _SDFTexSize - 1);
+			uint4 sState = _SDFIntermediateTex[samplePos];
+			if (sState.w != 0 && sState.w != 2)
+			{
+				float dis = length((float3)id - (float3)sState.xyz);
+				if (dis < minDis)
+				{
+					findCloser = true;
+					pState.xyz = sState.xyz;
+					minDis = dis;
+				}
+			}
+		}
+		//
+		if (findCloser)
+		{
+			pState = uint4(pState.xyz, 1);
+		}
+	}
+}
+
+void JFAInnerPoint(inout uint4 pState, uint3 id)
+{
+	if (pState.w >= 2)//for inner points
+	{
+		float minDis = 1e10;
+		if (pState.w >= 3)
+		{
+			//the inner point which is not initial value
+			minDis = length((float3)id - (float3)pState.xyz);
+		}
+		//
+		bool findCloser = false;
+		for (uint i = 0; i < 26; i++)
+		{
+			int3 samplePos = id + neighbors[i] * _JumpStep;
+			samplePos = clamp(samplePos, 0, _SDFTexSize - 1);
+			uint4 sState = _SDFIntermediateTex[samplePos];
+			if (sState.w != 0 && sState.w != 2)
+			{
+				float dis = length((float3)id - (float3)sState.xyz);
+				if (dis < minDis)
+				{
+					findCloser = true;
+					pState.xyz = sState.xyz;
+					minDis = dis;
+				}
+			}
+		}
+		//
+		if (findCloser)
+		{
+			pState = uint4(pState.xyz, 3);
+		}
+	}
+}
+
+[numthreads(4, 4, 4)]
+void JFAKernel (uint3 id : SV_DispatchThreadID)
+{
+	if (any(id >= _SDFTexSize))
+	{
+		return;
+	}
+	uint4 pState = _SDFIntermediateTex[id];
+	JFAOuterPoint(pState, id);
+	JFAInnerPoint(pState, id);
+	RW_SDFIntermediateTex[id] = pState;
+}
+
+[numthreads(4, 4, 4)]
+void GenerateSDFDistanceKernel(uint3 id : SV_DispatchThreadID)
+{
+	if (any(id >= _SDFTexSize))
+	{
+		return;
+	}
+	uint4 nearestPos = _SDFIntermediateTex[id];
+	float dis = 0.5 + sign(nearestPos.w - 1.5) * length(((float3)id - (float3)nearestPos.xyz) * min(_SDFTexInvSize.x, min(_SDFTexInvSize.y, _SDFTexInvSize.z)));//TODO:pass min(_SDFTexInvSize.x, min(_SDFTexInvSize.y, _SDFTexInvSize.z)) from cpu
+	RW_SDFTex[id] = saturate(dis);
+}

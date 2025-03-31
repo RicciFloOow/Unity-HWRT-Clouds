@@ -1,0 +1,17 @@
+#pragma kernel CopyCustomCloudDataFieldsKernel
+
+#include "ACloudDataStruct.cginc"
+
+
+StructuredBuffer<CloudDataField> _ACloudTracingCustomDataFieldBuffer;
+RWStructuredBuffer<CloudDataField> RW_ACloudTracingDataFieldBuffer;
+
+[numthreads(64, 1, 1)]
+void CopyCustomCloudDataFieldsKernel (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= 1024)
+    {
+        return;
+    }
+    RW_ACloudTracingDataFieldBuffer[id.x] = _ACloudTracingCustomDataFieldBuffer[id.x];
+}
