@@ -71,7 +71,7 @@ void RTCloudRayGeneration()
 	float3 wPos = DepthToWorldSpace(ndcPos);//深度还原的世界坐标并不是精确的，但对我们这里足够用了
 	//
 	bool needReflect = normal.w > REFLECTABLE_SMOOTHNESS;
-	bool needTracingFromCam = _WorldSpaceCameraPos.y < _CloudTracingLayerTop ? (_CloudTracingLayerBottom < _WorldSpaceCameraPos.y ? true : (rayDirection.y > 0) & !(wPos.y < _CloudTracingLayerBottom && needReflect)) : rayDirection.y < 0;
+	bool needTracingFromCam = _WorldSpaceCameraPos.y < _CloudTracingLayerTop ? (_CloudTracingLayerBottom < _WorldSpaceCameraPos.y ? true : ((rayDirection.y > 0) && !(wPos.y < _CloudTracingLayerBottom && needReflect))) : rayDirection.y < 0;
 	if (needTracingFromCam)
 	{
 		//这种射线需要检查是否是朝向地面的，如果是可能在miss shader中要tracing
